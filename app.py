@@ -400,7 +400,7 @@ with tab_settle:
             # Key on (game_date, pitcher_name, book, line, side) — same as UPDATE WHERE clause
             auto_keys = set(
                 zip(candidates["game_date"].astype(str), candidates["pitcher_name"],
-                    candidates["bookmaker_key"], candidates["line"].astype(str), candidates["side"])
+                    candidates["book"], candidates["line"].astype(str), candidates["side"])
             )
             no_data_pending = pending[
                 ~pending.apply(
