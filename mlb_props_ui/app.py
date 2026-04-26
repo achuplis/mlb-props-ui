@@ -131,7 +131,7 @@ def load_pending() -> pd.DataFrame:
 def load_name_review() -> pd.DataFrame:
     """Pitcher names from Odds API that need manual match confirmation."""
     return _fetch("""
-        SELECT pitcher_name AS odds_name, pitcher_id, match_type, fuzzy_score, fuzzy_candidate
+        SELECT pitcher_name AS odds_name, pitcher_id, match_type, fuzzy_score, chadwick_name
         FROM main.mlb_props_silver.pitcher_name_lookup
         WHERE match_type IN ('fuzzy_review', 'unmatched')
         ORDER BY match_type DESC, fuzzy_score ASC
@@ -142,11 +142,11 @@ def load_name_review() -> pd.DataFrame:
 def load_confirmed_pitchers() -> pd.DataFrame:
     """All confirmed pitcher name→MLBAM ID mappings (options for the review dropdown)."""
     return _fetch("""
-        SELECT DISTINCT pitcher_id, fuzzy_candidate AS chadwick_name
+        SELECT DISTINCT pitcher_id, chadwick_name
         FROM main.mlb_props_silver.pitcher_name_lookup
         WHERE match_type NOT IN ('unmatched')
           AND pitcher_id IS NOT NULL
-        ORDER BY fuzzy_candidate
+        ORDER BY chadwick_name
     """)
 
 
@@ -316,20 +316,20 @@ with tab_place:
             display = review_df.copy()
             display["confirmed_match"] = display.apply(
                 lambda r: (
-                    r["fuzzy_candidate"]
-                    if r["match_type"] == "fuzzy_review" and r["fuzzy_candidate"] in name_to_id
+                    r["chadwick_name"]
+                    if r["match_type"] == "fuzzy_review" and r["chadwick_name"] in name_to_id
                     else None
                 ),
                 axis=1,
             )
-            display = display[["odds_name", "fuzzy_candidate", "fuzzy_score",
+            display = display[["odds_name", "chadwick_name", "fuzzy_score",
                                 "match_type", "confirmed_match"]]
 
             edited = st.data_editor(
                 display,
                 column_config={
-                    "odds_name":       st.column_config.TextColumn("Odds API Name"),
-                    "fuzzy_candidate": st.column_config.TextColumn("Suggested Match"),
+                    "odds_name":    st.column_config.TextColumn("Odds API Name"),
+                    "chadwick_name": st.column_config.TextColumn("Suggested Match"),
                     "fuzzy_score":     st.column_config.NumberColumn("Score", format="%d", width="small"),
                     "match_type":      st.column_config.TextColumn("Status", width="small"),
                     "confirmed_match": st.column_config.SelectboxColumn(
@@ -338,7 +338,7 @@ with tab_place:
                                            required=False,
                                        ),
                 },
-                disabled=["odds_name", "fuzzy_candidate", "fuzzy_score", "match_type"],
+                disabled=["odds_name", "chadwick_name", "fuzzy_score", "match_type"],
                 use_container_width=True,
                 hide_index=True,
                 key="name_review_editor",
@@ -361,7 +361,7 @@ with tab_place:
                             """
                             UPDATE main.mlb_props_silver.pitcher_name_lookup
                             SET    pitcher_id = ?, match_type = 'manual_confirmed',
-                                   fuzzy_candidate = ?
+                                   chadwick_name = ?
                             WHERE  pitcher_name = ?
                             """,
                             [int(new_id), str(row["confirmed_match"]), str(row["odds_name"])],
