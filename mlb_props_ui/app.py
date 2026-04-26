@@ -127,6 +127,29 @@ def load_pending() -> pd.DataFrame:
     return df
 
 
+@st.cache_data(ttl=120)
+def load_name_review() -> pd.DataFrame:
+    """Pitcher names from Odds API that need manual match confirmation."""
+    return _fetch("""
+        SELECT pitcher_name AS odds_name, pitcher_id, match_type, fuzzy_score, fuzzy_candidate
+        FROM main.mlb_props_silver.pitcher_name_lookup
+        WHERE match_type IN ('fuzzy_review', 'unmatched')
+        ORDER BY match_type DESC, fuzzy_score ASC
+    """)
+
+
+@st.cache_data(ttl=300)
+def load_confirmed_pitchers() -> pd.DataFrame:
+    """All confirmed pitcher name→MLBAM ID mappings (options for the review dropdown)."""
+    return _fetch("""
+        SELECT DISTINCT pitcher_id, fuzzy_candidate AS chadwick_name
+        FROM main.mlb_props_silver.pitcher_name_lookup
+        WHERE match_type NOT IN ('unmatched')
+          AND pitcher_id IS NOT NULL
+        ORDER BY fuzzy_candidate
+    """)
+
+
 @st.cache_data(ttl=60)
 def load_settled() -> pd.DataFrame:
     """Settled bets for P&L reporting (excludes pending)."""
@@ -258,6 +281,93 @@ with tab_place:
                         )
                 st.success(f"Confirmed {len(selected)} bet(s) for {selected_date}.")
                 load_placed.clear()
+                st.rerun()
+
+    # ── Name matching review ──────────────────────────────────────────────────
+    # Surfaces Odds API pitcher names that couldn't be auto-matched to MLBAM IDs.
+    # Corrections saved here update pitcher_name_lookup directly.
+    # NOTE: re-running build_pitcher_lookup.py (full overwrite) will wipe manual_confirmed rows.
+    # To make corrections permanent, also add them to NAME_OVERRIDES in that notebook.
+    st.divider()
+    review_df = load_name_review()
+    n_review  = len(review_df)
+    label     = (
+        f"⚠️ Name matching review — {n_review} item(s) need attention"
+        if n_review > 0
+        else "Name matching review — all names matched ✓"
+    )
+
+    with st.expander(label, expanded=n_review > 0):
+        if review_df.empty:
+            st.success("All pitcher names from The Odds API are matched to MLBAM IDs.")
+        else:
+            st.caption(
+                "**Left:** name as received from The Odds API.  "
+                "**Suggested Match:** best fuzzy guess.  "
+                "**Confirmed Match:** select the correct Statcast name to save."
+            )
+            confirmed_df = load_confirmed_pitchers()
+            name_to_id   = dict(zip(
+                confirmed_df["chadwick_name"],
+                confirmed_df["pitcher_id"].astype(int),
+            ))
+            name_options = sorted(confirmed_df["chadwick_name"].dropna().tolist())
+
+            display = review_df.copy()
+            display["confirmed_match"] = display.apply(
+                lambda r: (
+                    r["fuzzy_candidate"]
+                    if r["match_type"] == "fuzzy_review" and r["fuzzy_candidate"] in name_to_id
+                    else None
+                ),
+                axis=1,
+            )
+            display = display[["odds_name", "fuzzy_candidate", "fuzzy_score",
+                                "match_type", "confirmed_match"]]
+
+            edited = st.data_editor(
+                display,
+                column_config={
+                    "odds_name":       st.column_config.TextColumn("Odds API Name"),
+                    "fuzzy_candidate": st.column_config.TextColumn("Suggested Match"),
+                    "fuzzy_score":     st.column_config.NumberColumn("Score", format="%d", width="small"),
+                    "match_type":      st.column_config.TextColumn("Status", width="small"),
+                    "confirmed_match": st.column_config.SelectboxColumn(
+                                           "Confirmed Match",
+                                           options=name_options,
+                                           required=False,
+                                       ),
+                },
+                disabled=["odds_name", "fuzzy_candidate", "fuzzy_score", "match_type"],
+                use_container_width=True,
+                hide_index=True,
+                key="name_review_editor",
+            )
+
+            changed = edited[edited["confirmed_match"].notna() & (edited["confirmed_match"] != "")]
+            st.caption(f"{len(changed)} correction(s) ready to save")
+
+            if st.button(
+                f"Save {len(changed)} name correction(s)",
+                disabled=len(changed) == 0,
+                key="save_name_corrections_btn",
+            ):
+                with db.get_cursor() as cur:
+                    for _, row in changed.iterrows():
+                        new_id = name_to_id.get(row["confirmed_match"])
+                        if new_id is None:
+                            continue
+                        cur.execute(
+                            """
+                            UPDATE main.mlb_props_silver.pitcher_name_lookup
+                            SET    pitcher_id = ?, match_type = 'manual_confirmed',
+                                   fuzzy_candidate = ?
+                            WHERE  pitcher_name = ?
+                            """,
+                            [int(new_id), str(row["confirmed_match"]), str(row["odds_name"])],
+                        )
+                st.success(f"Saved {len(changed)} correction(s).")
+                load_name_review.clear()
                 st.rerun()
 
 
